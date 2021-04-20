@@ -44,6 +44,8 @@ Run this model to launch the modeling including time series analysis (optional) 
 
 
 Clustering:
+
+
 ![image](https://user-images.githubusercontent.com/60135226/115432329-d5934980-a238-11eb-9a98-78fe0d07e543.png)
 
 ![image](https://user-images.githubusercontent.com/60135226/115432368-daf09400-a238-11eb-8d3d-b38b52207bb5.png)
