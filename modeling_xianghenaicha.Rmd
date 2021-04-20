@@ -1,0 +1,214 @@
+---
+title: "House prices during Covid"
+output: html_notebook
+---
+
+```{r,message=FALSE}
+# load packages
+library(tidyverse)
+library(astsa)
+library(forecast)
+library(lubridate)
+```
+
+# Part 1 Time series analysis (alternative)
+# load data
+```{r}
+us_hv<- read_csv("country_level_hv.csv")
+
+us_hv%>%filter(year_month >= '2018-01-01') -> us_hv
+
+us_sfr_ts <- ts(us_hv$value_sfr, start =c(2018, 1), frequency = 12)
+
+plot.ts(us_sfr_ts)
+```
+
+# acf & pacf plots of the series
+```{r}
+ggAcf(us_sfr_ts)
+ggPacf(us_sfr_ts)
+```
+
+
+```{r}
+us_sfr_ts_auto <- auto.arima(us_sfr_ts)
+us_sfr_ts_auto
+checkresiduals(us_sfr_ts_auto)
+
+```
+```{r}
+us_sfr_ts_fit1 <-arima(us_sfr_ts, order=c(1, 2, 1))
+summary(us_sfr_ts_fit1)
+
+us_sfr_ts_fit1%>%forecast(h = 10)%>%autoplot()
+
+(302307.5 - 265679)/265679*100
+```
+
+```{r}
+us_sfr_ts_fit2<- holt(us_sfr_ts)
+summary(us_sfr_ts_fit2)
+holt(us_sfr_ts)%>%autoplot()
+```
+
+# other predictors
+```{r}
+us_hv%>%mutate(is_covid = if_else(year_month > '2020-04-01', 1, 0)) -> us_hv
+
+us_sfr_ts_fit3 <- arima(us_sfr_ts, order= c(1,2,1), xreg = us_hv$is_covid)
+summary(us_sfr_ts_fit3)
+checkresiduals(us_sfr_ts_fit3)
+	
+```
+
+# Part 2 regression
+# Considering the fact that the arima model didn't perform well in this case, we tried to construct regression models to explore some factors influencing the house price during covid
+
+# load data
+```{r}
+# load model related data 
+# those are some factors we found during the exploratory analysis that would potentially affecting the house price 
+
+# factors including state level house prices, state level covid cases and deaths, state level total number of vaccinations, nationwide mortage rate, and nationwide total number of house completion
+
+state_hv<- read_csv("state_level_hv.csv")
+state_case<- read_csv("United_States_COVID-19_Cases_and_Deaths_by_State_over_Time.csv")
+state_vaccination<- read_csv("us_state_vaccinations.csv")
+mortgage_rate <- read_csv('mortgage_rate.csv') %>% clean_names()
+house_completion <- read_csv('house_completion.csv') %>% clean_names()
+population <- read_csv("population.csv")%>%select(NAME, POPESTIMATE2019)
+
+```
+
+```{r}
+cor(state_case$new_case, state_case$new_death)
+
+```
+
+# data clearning
+```{r}
+
+state_case%>%
+  mutate(submission_date = mdy(submission_date),
+         year = year(submission_date),
+         month = month(submission_date))%>%
+  group_by(state, year, month)%>%
+  summarise(tot_cases_month = max(new_case),
+            tot_deaths_month = max(new_death)) ->state_case_clean
+
+# take the difference to calculate the monthly growth in total number of people fully vaccinated
+state_vaccination%>%
+  mutate(year = year(date),
+         month = month(date))%>%
+  group_by(location, year, month)%>%
+  summarise(people_fully_vaccinated_per_hundred_diff = max(people_fully_vaccinated_per_hundred, na.rm = TRUE)-min(people_fully_vaccinated_per_hundred, na.rm = TRUE))%>%
+  select(location, year, month, people_fully_vaccinated_per_hundred_diff)-> state_vaccination_clean
+
+# calculate the monthly growth rate of single-family homes
+# from 2019 Feburary
+state_hv%>%
+  group_by(StateName)%>%
+  mutate(num_listing_sfr_lag = lag(num_listing_sfr),
+         num_listing_sfr_growth_rate = (num_listing_sfr - num_listing_sfr_lag)/num_listing_sfr_lag*100)%>%
+  filter(year_month > '2019-02-01')%>%
+  mutate(year = year(year_month),
+         month = month(year_month))%>%
+  select(RegionName, StateName, year_month, year, month, value_sfr_growth, num_listing_sfr_growth_rate)-> state_hv_clean
+
+# nationwide mortgage rate
+# from 2019 Feburary
+mortgage_rate %>%
+  mutate(time=mdy(time)) %>%
+  filter(time > '2019-02-01') %>%
+  rename(date=time, mortgage_rate=usa) %>%
+  mutate(year = year(date),
+         month = month(date)) %>%
+  subset(select=-c(ym, date)) -> mortgage_rate_clean
+
+# nationwide total number of house completion
+# from 2019 Feburary
+house_completion %>%
+  mutate(date = ymd(paste(ym,'-02',sep=''))) %>%
+  filter(date > '2019-02-01') %>%
+  rename(house_completion=usa) %>%
+  mutate(year = year(date),
+         month = month(date)) %>%
+  subset(select=-c(ym, date)) -> house_completion_clean
+
+
+# join cleaned datasets
+state_hv_clean%>%
+  left_join(state_case_clean, by = c("StateName" = "state", "year", "month"))%>%
+  left_join(state_vaccination_clean, by = c("RegionName"="location", "year", "month")) %>%
+  left_join(mortgage_rate_clean, by = c("year" , "month")) %>%
+  left_join(house_completion_clean, by = c("year" , "month")) -> train_df
+
+# replace na with 0
+train_df[is.na(train_df)] <- 0
+
+# considering that the total number of covid cases and deaths are highly affected by the population, calculate the total cases and deaths per thousand
+train_df%>%
+  left_join(population, by = c("RegionName" = "NAME"))%>%
+  mutate(tot_cases_per_thousand = tot_cases_month/POPESTIMATE2019*1000,
+         tot_deaths_per_thousand = tot_deaths_month/POPESTIMATE2019*1000)%>%
+  mutate(across(.cols = is.numeric, round, 2)) -> train_df
+
+
+```
+
+
+
+# regression model 1
+
+```{r}
+lm_fit1 <- lm(value_sfr_growth ~ num_listing_sfr_growth_rate + 
+                new_death_growth_rate  + 
+                people_fully_vaccinated_per_hundred_diff + 
+                mortgage_rate + 
+                house_completion, data = train_df)
+
+summary(lm_fit1)
+
+```
+# regression model 2
+
+```{r}
+# add a binary variable indication if the datapoint is during covid
+train_df<- train_df %>% mutate(in_covid = if_else(year_month > "2020-03-01", 1, 0))
+
+# get rid of some insignificant variables
+lm_fit2 <- lm(value_sfr_growth ~ num_listing_sfr_growth_rate + 
+                in_covid  + 
+                people_fully_vaccinated_per_hundred_diff, data = train_df)
+summary(lm_fit2)
+
+# R squared 0.3825
+```
+
+# regression model 3
+
+```{r}
+
+lm_fit3 <- lm(value_sfr_growth ~ num_listing_sfr_growth_rate + 
+                tot_deaths_per_thousand + 
+                people_fully_vaccinated_per_hundred_diff, data = train_df)
+summary(lm_fit3)
+
+# R squared 0.218
+```
+
+# regression model 4
+
+```{r}
+# add two country level variables
+lm_fit4 <- lm(value_sfr_growth ~ num_listing_sfr_growth_rate + 
+                in_covid  + 
+                people_fully_vaccinated_per_hundred_diff + 
+                mortgage_rate + 
+                house_completion, data = train_df2)
+
+summary(lm_fit4)
+
+# R squared 0.4341
+```
+

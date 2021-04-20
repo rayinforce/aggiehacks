@@ -1,0 +1,142 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(factoextra)
+library(reshape2)
+```
+
+```{r}
+#further process suvey data
+survey_us<- read_csv("us_week1_27.csv")
+survey_us[is.na(survey_us)]<- 0
+
+survey_us%>%select_if(is.numeric)%>%select(-week, -total) -> survey_us_messure
+survey_us[paste0(colnames(survey_us_messure), "_pct")] <- round(survey_us_messure/survey_us$total, 2)
+
+survey_state<- read_csv("state_week1-27.csv")
+survey_state[is.na(survey_state)]<- 0
+
+survey_state%>%select_if(is.numeric)%>%select(-week, -total) -> survey_state_messure
+survey_state[paste0(colnames(survey_state_messure), "_pct")] <- round(survey_state_messure/survey_state$total, 2)
+
+write_csv(survey_us, "us_week1_27.csv")
+write_csv(survey_state, "state_week1_27.csv")
+
+```
+
+```{r}
+# pct not caught up / deaths / vaccine coverage / house price growth 
+# Jan  and Feb
+
+survey_state%>%
+  filter((select_characteristics ==  "Total") & (week >= 22) & (week <= 25)) %>%
+  group_by(state)%>%
+  summarise(avg_pct_not_caught_up_payment = mean(household_currently_caught_up_on_payments_no_pct)) -> var1
+
+
+
+
+```
+
+```{r}
+#read in needed files for clustering variables 
+state_hv<- read_csv("state_level_hv.csv")
+state_case<- read_csv("United_States_COVID-19_Cases_and_Deaths_by_State_over_Time.csv")
+state_vaccination<- read_csv("us_state_vaccinations.csv")
+population <- read_csv("population.csv")%>%select(NAME, POPESTIMATE2019)
+
+
+```
+
+```{r}
+state_case%>%
+  mutate(submission_date = mdy(submission_date),
+         year = year(submission_date),
+         month = month(submission_date))%>%
+  filter((year == 2021) & (month  == 2))%>%
+  group_by(state)%>%
+  summarise(total_death = max(tot_death)) -> var2
+
+state_vaccination%>%
+  mutate(year = year(date),
+         month = month(date))%>%
+  filter((year == 2021) & (month  == 2))%>%
+  group_by(location)%>%
+  summarise(people_fully_vaccinated_per_hundred = max(people_fully_vaccinated_per_hundred, na.rm = TRUE)) -> var3
+
+
+state_hv%>%
+  filter((year_month > '2021-01-01') & (year_month < '2021-03-01'))%>%
+  group_by(RegionName, StateName)%>%
+  summarise(avg_value_growth = mean(value_growth)) -> var4
+
+var4%>%
+  inner_join(var3, by=c("RegionName" = "location"))%>%
+  inner_join(var2, by=c("StateName" = "state"))%>%
+  inner_join(var1, by=c("StateName" = "state"))%>%
+  inner_join(population, by=c("RegionName" = "NAME"))%>%
+  mutate(total_death_per_thousand = total_death/POPESTIMATE2019*1000)%>%
+  select(-POPESTIMATE2019, -total_death)%>%
+  mutate(avg_pct_not_caught_up_payment = avg_pct_not_caught_up_payment*100) -> train_df
+  
+train_df%>%select(-RegionName, -StateName) -> cluster_df
+
+
+```
+
+
+```{r}
+# 4 clusters seems to be the elbel point
+fviz_nbclust(train_df[, 3:6],kmeans, method="wss")
+```
+
+```{r}
+set.seed(1997)
+
+#use k-means to do 4 clusters 
+clusters <- kmeans(train_df[, 3:6], 4, iter.max = 200, nstart = 3)
+print(clusters)
+
+# visualize clusters
+
+fviz_cluster(clusters, train_df[, 3:6], ellipse.type="norm",geom="point")
+```
+
+```{r}
+#plot cluster mean heatmap
+train_df[, 3:6] %>% 
+  group_by(clusters$cluster) %>% 
+  summarize_all(mean, na.rm = T)%>%
+  rename(clusters = "clusters$cluster")%>%
+  mutate_at(vars(train_df[, 3:6]%>%colnames()), funs(scale(.,center = TRUE)))%>%
+  melt(., id.vars = "clusters")%>%
+  ggplot(aes_string(x = "clusters", y = "variable", fill = "value"))+
+  geom_tile()+
+  scale_fill_gradient(low="white", high="red")
+
+
+train_df[, 3:6] %>% 
+  group_by(clusters$cluster) %>%
+  summarise(number_of_states = n())%>%
+  inner_join(train_df[, 3:6] %>% 
+  group_by(clusters$cluster) %>%
+  summarize_all(mean, na.rm = T))%>%
+  melt(., id.vars = "clusters$cluster")%>%
+  pivot_wider(names_from = "clusters$cluster", values_from = "value")%>%
+  mutate_if(is.numeric, round, 2)
+
+#store cluster variable
+train_df["cluster"] <- clusters$cluster
+
+write_csv(train_df, "clustering.csv")
+
+```
+
+
+
+

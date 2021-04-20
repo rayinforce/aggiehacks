@@ -1,0 +1,174 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r,message=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+```{r}
+#read in all files 
+#naming convention: metric_hometype_tier/level (hv: home value)
+hv_all_m <- read_csv("Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv")
+hv_all_b <- read_csv("Metro_zhvi_uc_sfrcondo_tier_0.0_0.33_sm_sa_mon.csv")
+hv_all_t <- read_csv("Metro_zhvi_uc_sfrcondo_tier_0.67_1.0_sm_sa_mon.csv")
+
+hv_all_m_state<- read_csv("State_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv")
+
+hv_sfr_us<- read_csv("Metro_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_mon.csv")
+hv_con_us<- read_csv("Metro_zhvi_uc_condo_tier_0.33_0.67_sm_sa_mon.csv")
+
+hv_sfr_state<- read_csv("State_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_mon.csv")
+hv_con_state<- read_csv("State_zhvi_uc_condo_tier_0.33_0.67_sm_sa_mon.csv")
+
+inventory_all<- read_csv("Metro_invt_fs_uc_sfrcondo_smoothed_month.csv")
+inventory_sfr<- read_csv("Metro_invt_fs_uc_sfr_smoothed_month.csv")
+
+hv_all_m_county<- read_csv("County_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_mon.csv")
+hv_sfr_county<- read_csv("County_zhvi_uc_sfr_tier_0.33_0.67_sm_sa_mon.csv")
+hv_con_county<- read_csv("County_zhvi_uc_condo_tier_0.33_0.67_sm_sa_mon.csv")
+
+head(hv_all_m)
+```
+
+```{r}
+pivot_trim<- function(df){
+  # a function that pivots the dataframe and trim the data down to only keep data after 2000
+  df%>%
+    select(-starts_with("1"))%>%
+    pivot_longer(cols = starts_with("2"), names_to="year_month", values_to="value")%>%
+    mutate(year_month = ymd(year_month)) -> df
+    
+  return(df)
+  
+}
+
+hv_all_m_clean<- pivot_trim(hv_all_m)
+hv_all_b_clean<- pivot_trim(hv_all_b)
+hv_all_t_clean<- pivot_trim(hv_all_t)
+
+hv_all_m_state_clean<- pivot_trim(hv_all_m_state)
+
+hv_sfr_us_clean<- pivot_trim(hv_sfr_us)
+hv_con_us_clean<- pivot_trim(hv_con_us)
+
+hv_sfr_state_clean<- pivot_trim(hv_sfr_state)
+hv_con_state_clean<- pivot_trim(hv_con_state)
+
+inventory_all_clean<- pivot_trim(inventory_all)
+inventory_sfr_clean<- pivot_trim(inventory_sfr)
+
+hv_all_m_county_clean<- pivot_trim(hv_all_m_county)%>%select(RegionID, SizeRank,RegionName, StateName, year_month, value)
+hv_sfr_county_clean<- pivot_trim(hv_sfr_county)%>%select(RegionID, SizeRank, RegionName, StateName, year_month, value)
+hv_con_county_clean<- pivot_trim(hv_con_county)%>%select(RegionID, SizeRank, RegionName, StateName, year_month, value)
+
+```
+
+
+```{r}
+#filter and combine data on the country level
+hv_all_m_clean%>%
+  filter(RegionType == "Country")%>%
+  mutate(tier = "middle")%>%
+  rbind(hv_all_t_clean%>%
+          filter(RegionType == "Country")%>%
+          mutate(tier = "top"))%>%
+  rbind(hv_all_b_clean%>%
+          filter(RegionType == "Country")%>%
+          mutate(tier = "bottom")) -> hv_all_us
+
+#peek into the overall trend
+ggplot(hv_all_us, aes(x=year_month, y=value))+ 
+  geom_line(aes(color = tier), size =1)+
+  geom_vline(xintercept = as.Date('2020-03-15'), #covid cutoff
+             linetype = "dashed")
+
+ggplot(hv_all_us%>%filter(year_month > '2020-01-01'), aes(x=year_month, y=value))+geom_line(aes(color = tier), size =1) 
+
+
+
+```
+
+
+```{r}
+#combine with different home type - country level 
+hv_all_us%>%
+  select(RegionName, tier, year_month, value)%>%
+  pivot_wider(names_from = tier, values_from = value,names_prefix= "value_tier_")%>%
+  cbind(hv_sfr_us_clean%>%
+          filter(RegionType == "Country")%>%
+          select(value)%>%
+          rename(value_sfr = value))%>%
+  cbind(hv_con_us_clean%>%
+        filter(RegionType == "Country")%>%
+        select(value)%>%
+        rename(value_con = value)) -> country_level_hv
+
+#combine with different home type -state_level
+hv_all_m_state_clean%>%
+  cbind(hv_con_state_clean%>%select(value)%>%rename(value_con = value))%>%
+  cbind(hv_sfr_state_clean%>%select(value)%>%rename(value_sfr = value))%>%
+  left_join(inventory_all_clean%>%
+              group_by(year_month, StateName)%>%
+              summarise(num_listing_all = sum(value)),
+             by = c("StateName", "year_month"))%>%
+  left_join(inventory_sfr_clean%>%
+              group_by(year_month, StateName)%>%
+              summarise(num_listing_sfr = sum(value)),
+             by = c("StateName", "year_month")) -> state_level_hv
+
+#combine with different home type -county level
+hv_all_m_county_clean%>%
+  left_join(hv_sfr_county_clean%>%select(RegionID, year_month, value)%>%rename(value_con = value), by = c("RegionID", "year_month"))%>%
+  left_join(hv_con_county_clean%>%select(RegionID, year_month, value)%>%rename(value_sfr = value), by = c("RegionID", "year_month")) -> county_level_hv
+
+
+```
+
+```{r}
+
+# calculate percentage growth for each level of data, round to 2 decimals
+state_level_hv%>%
+  group_by(StateName)%>%
+  mutate(across(starts_with("value"), lag, .names = "{.col}_lag"))%>%
+  ungroup()%>%
+  mutate(value_growth = (value-value_lag)/value_lag *100,
+         value_con_growth = (value_con - value_con_lag)/value_con_lag *100,
+         value_sfr_growth = (value_sfr - value_sfr_lag)/value_sfr_lag *100)%>%
+  mutate(across(ends_with("growth"), round, 2))%>%
+  select(-ends_with("lag")) -> state_level_hv
+
+country_level_hv%>%
+  mutate(across(starts_with("value"), lag, .names = "{.col}_lag"))%>%
+  mutate(value_tier_middle_growth = (value_tier_middle-value_tier_middle_lag)/value_tier_middle_lag *100,
+         value_tier_top_growth = (value_tier_top - value_tier_top_lag)/value_tier_top_lag *100,
+         value_tier_bottom_growth = (value_tier_bottom - value_tier_bottom_lag)/value_tier_bottom_lag *100,
+         value_sfr_growth = (value_sfr-value_sfr_lag)/value_sfr_lag *100,
+         value_con_growth = (value_con - value_con_lag)/value_con_lag *100)%>%
+  mutate(across(ends_with("growth"), round, 2))%>%
+  select(-ends_with("lag")) -> country_level_hv
+
+county_level_hv%>%
+  group_by(RegionID)%>%
+  mutate(across(starts_with("value"), lag, .names = "{.col}_lag"))%>%
+  ungroup()%>%
+  mutate(value_growth = (value-value_lag)/value_lag *100,
+         value_con_growth = (value_con - value_con_lag)/value_con_lag *100,
+         value_sfr_growth = (value_sfr - value_sfr_lag)/value_sfr_lag *100)%>%
+  mutate(across(ends_with("growth"), round, 2))%>%
+  select(-ends_with("lag")) -> county_level_hv
+
+  
+```
+
+```{r}
+#write out to file
+write_csv(country_level_hv, "country_level_hv.csv")
+write_csv(state_level_hv, "state_level_hv.csv")
+#only keep more recent data for county level - in case file gets too big
+write_csv(county_level_hv%>%filter(year_month>'2014-12-31'), "county_level_hv.csv")
+
+```
+

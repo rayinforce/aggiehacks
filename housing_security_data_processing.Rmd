@@ -1,0 +1,203 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r, message=FALSE}
+#load packages
+library(tidyverse)
+library(readxl)
+library(zoo)
+```
+
+```{r}
+
+read_and_clean<- function(weekrange = c(1:1), range_payment, range_confidence){
+  #main function to process housing security related survey data from US Census Bureau
+  #weekrange: the range of week number to process
+  #range_payment: the payment status and confidence files have differentt layout, which requires specific range
+  #range_confidence: same as above
+  
+  state_level_df<- tibble()
+  country_level_df <- tibble() #create empty dataframe to build upon
+  
+  for (weeknum in weekrange){
+    #construct file names
+    owner_payment_status <- paste0("housing1a_week", weeknum, ".xlsx")
+    renter_payment_status <- paste0("housing1b_week", weeknum, ".xlsx")
+    owner_confidence <- paste0("housing2a_week", weeknum, ".xlsx")
+    renter_confidence <- paste0("housing2b_week", weeknum, ".xlsx")
+    
+    #process us country level and state level separately
+    us1 <- read_xlsx(owner_payment_status, sheet = 1, range = range_payment)%>%clean_excel("US", "owner", weeknum)
+    us2 <- read_xlsx(renter_payment_status, sheet = 1, range = range_payment)%>%clean_excel("US", "renter", weeknum)
+    us3 <- read_xlsx(owner_confidence, sheet = 1, range = range_confidence)%>%clean_excel("US", "owner", weeknum)
+    us4 <- read_xlsx(renter_confidence, sheet = 1, range = range_confidence)%>%clean_excel("US", "renter", weeknum)    
+    
+    #bind results together
+    country_level_df<- country_level_df%>%rbind((us1%>%rbind(us2)%>%cbind(us3%>%rbind(us4)%>%select(starts_with("confidence")))))
+    
+    #process state level data
+    state1<- combine_state(owner_payment_status, "owner",range_payment,  weeknum)
+    state2<- combine_state(renter_payment_status, "renter", range_payment, weeknum)
+    state3<- combine_state(owner_confidence, "owner",range_confidence,weeknum)
+    state4<- combine_state(renter_confidence, "renter",range_confidence, weeknum)
+    
+    #bind results together
+    state_level_df<- state_level_df%>%rbind((state1%>%rbind(state2)%>%cbind(state3%>%rbind(state4)%>%select(starts_with("confidence")))))
+    
+    #print progress
+    print(paste("week", weeknum, "done"))
+  }
+  
+  #replace special characters as null
+  state_level_df[state_level_df=="-"]<- NA
+  country_level_df[country_level_df=="-"]<- NA
+  
+  #return a country level data frame and a state level data frame
+  dfs<- list(state_level_df, country_level_df)
+  
+  return(dfs)
+  
+  
+}
+
+
+
+clean_excel<- function(df, state_code, sheet_type, weeknum){
+  #a helper function that handles the format cleaning
+
+  colnames(df)<- str_replace(paste(colnames(df), df[1,]), "NA", "")
+  
+  df<- df%>%janitor::clean_names()
+  
+  df%>%
+    filter(!is.na(select_characteristics))%>%
+    mutate(characteristics = ifelse(is.na(total), select_characteristics, NA)) -> df
+  
+  df$characteristics[1]<- "total"
+  df$characteristics <- na.locf(df$characteristics) #create indicator characteristics
+  
+  df%>%filter(!is.na(total))%>%
+    mutate(state = state_code,
+           if_own = sheet_type,
+           week = weeknum)-> df
+  
+  return(rename_schema(df, sheet_type))
+}
+
+combine_state<- function(filename, sheet_type, range, weeknum){
+  #a helper function that reads all separated sheets named by state code and combine them together
+
+  state_abriv<- c("AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY") 
+  
+  state_combined = tibble()
+  
+  for (state_code in state_abriv){
+    state_df <- read_xlsx(filename, sheet = state_code, range = range)
+    state_df <- clean_excel(state_df, state_code, sheet_type, weeknum)
+    state_combined<- state_combined%>%rbind(state_df)
+  }
+  
+  return(state_combined)
+}
+
+rename_schema<- function(df, type){
+  #a helper function that handles column name conflicts when binding data frame
+  
+  if(type == "owner"){
+    df%>%rename(payment_not_required = owned_free_and_clear) -> df
+  } else if(type == "renter"){
+    df%>%rename(payment_not_required = occupied_without_rent) -> df
+  }
+  
+  colnames(df)<- str_replace_all(df%>%colnames(), c("rent"="payment", "_in_ability"= "", "month_s" = "months", "mortgage" ="payment"))
+  colnames(df)<- str_replace(df%>%colnames(), "payment_payment", "payment")                               
+                            
+  return(df)
+}
+
+
+```
+
+```{r, warning=FALSE}
+
+#read and process all files
+items1<- read_and_clean(weekrange = c(1:12), "A4:H54", "A4:J54")
+items2<- read_and_clean(weekrange = c(13:27), "A5:G63", "A5:J63") 
+
+
+write_csv(data.frame(items1[2]), "us_week1-12.csv")
+write_csv(data.frame(items1[1]), "state_week1-12.csv")
+
+write_csv(data.frame(items2[2]), "us_week13-27.csv")
+write_csv(data.frame(items2[1]), "state_week13-27.csv")
+
+
+
+```
+```{r}
+#final clean and consolidate files
+
+us_phase1 <- read_csv("us_week1-12.csv")
+us_phase2_3<- read_csv("us_week13-27.csv")
+
+state_phase1<- read_csv("state_week1-12.csv")
+state_phase2_3<- read_csv("state_week13-27.csv")
+
+#clean the digits in column names
+colnames(us_phase1)<- str_replace(colnames(us_phase1), "_[:digit:]", "")
+colnames(us_phase2_3)<- str_replace(colnames(us_phase2_3), "_[:digit:]", "")
+colnames(state_phase1)<- str_replace(colnames(state_phase1), "_[:digit:]", "")
+colnames(state_phase2_3)<- str_replace(colnames(state_phase2_3), "_[:digit:]", "")
+
+#replace null values to 0
+us_phase1[is.na(us_phase1)] <- 0
+us_phase2_3[is.na(us_phase2_3)]<- 0
+state_phase1[is.na(state_phase1)]<- 0
+state_phase2_3[is.na(state_phase2_3)]<- 0
+
+#consolidate last month payment negative response and deferred response to not-caught-up-on-payment as general
+us_phase1%>%mutate(household_currently_caught_up_on_payments_no = last_months_payment_status_no + last_months_payment_status_payment_was_deferred)%>%
+  select(-last_months_payment_status_no, -last_months_payment_status_payment_was_deferred)%>%
+  rename(household_currently_caught_up_on_payments_yes = last_months_payment_status_yes,
+         household_currently_caught_up_on_payments_did_not_report = last_months_payment_status_did_not_report) -> us_phase1
+
+us_phase2_3%>%
+  rename(household_currently_caught_up_on_payments_yes = household_curpaymently_caught_up_on_payments_yes,
+         household_currently_caught_up_on_payments_no = household_curpaymently_caught_up_on_payments_no,
+         household_currently_caught_up_on_payments_did_not_report = household_curpaymently_caught_up_on_payments_did_not_report) -> us_phase2_3
+
+#reorder columns
+us_phase1<- us_phase1[, c(10, 8, 7, 1, 9, 6, 2,3,4, 17, 5 , 11:16)]
+us_phase2_3<- us_phase2_3[, c(11, 9, 8, 1, 10, 7, 2:6, 12:17)]
+
+
+#do the same for state files 
+state_phase1%>%mutate(household_currently_caught_up_on_payments_no = last_months_payment_status_no + last_months_payment_status_payment_was_deferred)%>%
+  select(-last_months_payment_status_no, -last_months_payment_status_payment_was_deferred)%>%
+  rename(household_currently_caught_up_on_payments_yes = last_months_payment_status_yes,
+         household_currently_caught_up_on_payments_did_not_report = last_months_payment_status_did_not_report) -> state_phase1
+
+state_phase2_3%>%
+  rename(household_currently_caught_up_on_payments_yes = household_curpaymently_caught_up_on_payments_yes,
+         household_currently_caught_up_on_payments_no = household_curpaymently_caught_up_on_payments_no,
+         household_currently_caught_up_on_payments_did_not_report = household_curpaymently_caught_up_on_payments_did_not_report) -> state_phase2_3
+
+state_phase1<- state_phase1[, c(10, 8, 7, 1, 9, 6, 2,3,4, 17, 5 , 11:16)]
+state_phase2_3<- state_phase2_3[, c(11, 9, 8, 1, 10, 7, 2:6, 12:17)]
+
+#construct corresponding survey start time
+#phase 1 data were collected weekly and phase 2&3 were collected biweekly
+tibble(week = 1, starting_date = as.Date('2020-04-23'))%>%
+  rbind(tibble(week = seq(2, 12, 1), starting_date = seq(as.Date('2020-05-07'), as.Date('2020-07-16'), 7)))%>%
+  rbind(tibble(week = seq(13, 27, 1), starting_date = seq(as.Date('2020-08-19'), as.Date('2021-03-17'), 14)[-10])) -> time_tbl
+
+#combine and join time frame
+us_week1_27 <- us_phase1%>%rbind(us_phase2_3)%>%inner_join(time_tbl, by = "week")
+state_week1_27<- state_phase1%>%rbind(state_phase2_3)%>%inner_join(time_tbl, by = "week")
+
+write_csv(us_week1_27, "us_week1_27.csv")
+write_csv(state_week1_27, "state_week1-27.csv")
+
+```
+
