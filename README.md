@@ -36,14 +36,9 @@ https://drive.google.com/drive/folders/1o-ESU5pSACs9DIm_vwE4_aw0OTZG7E2b?usp=sha
 Run this model to launch the modeling including time series analysis (optional) and regression analysis.
 
 ## Simple Graphs of Model performace
-linear model:
-					Estimate	Pr(>|t|)
-Intercept				0.1822		6.19E-02
-num_listing_sfr_growth_rate		-0.003748	2.09E-05
-in_covid				0.129		3.20E-15
-people_fully_vaccinated_per_hundred_diff0.03228		< 2e-16
-mortgage_rate				-0.3211		< 2e-16
-house_completion			9.366E-07	< 2e-16
+
+
+![image](https://user-images.githubusercontent.com/60135226/115432964-931e3c80-a239-11eb-810f-1049e44a4fe2.png)
 
 
 
