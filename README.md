@@ -59,5 +59,5 @@ Clustering:
 
 
 ## Maintainers
-Rosie Wang (roselainewang@gmail.com)
-Rui Zheng (raywithoute@gmail.com)
+roselainewang@gmail.com    
+raywithoute@gmail.com
